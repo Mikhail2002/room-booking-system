@@ -31,6 +31,9 @@ model Booking {
   userId     Int
   startTime  DateTime
   endTime    DateTime
+  isDeleted  Boolean  @default(false)
+  
+  @@unique([userId, roomId, startTime, endTime])
 
   room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

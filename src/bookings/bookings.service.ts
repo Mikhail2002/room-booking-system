@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -17,41 +23,62 @@ export class BookingsService {
     const end = new Date(data.endTime);
     if (start >= end) throw new BadRequestException('startTime must be before endTime');
 
-    const overlappingBookings = await this.prisma.booking.findMany({
-      where: {
-        roomId: data.roomId,
-        OR: [
-          {
-            startTime: { lt: end },
-            endTime: { gt: start },
-          },
-        ],
-      },
-    });
-    if (overlappingBookings.length > 0) {
-      throw new BadRequestException('Booking time is already taken');
-    }
+    return this.prisma.$transaction(async (prisma) =>{
+      await prisma.$executeRawUnsafe(`
+        SELECT id FROM "Booking" 
+        WHERE "roomId" = $1 AND "isDeleted" = false
+        FOR UPDATE
+      `, data.roomId);
 
-    return this.prisma.booking.create({
-      data: {
-        roomId: data.roomId,
-        userId: data.userId,
-        startTime: start,
-        endTime: end,
-      },
-      include: { room: true, user: true },
-    });
+      const overlappingBookings = await this.prisma.booking.findFirst({
+        where: {
+          roomId: data.roomId,
+          isDeleted: false,
+          OR: [
+            {
+              startTime: { lt: end },
+              endTime: { gt: start },
+            },
+          ],
+        },
+      });
+
+      if (overlappingBookings) {
+        throw new BadRequestException('This room is already booked for the selected time period');
+      }
+
+      try {
+        return await this.prisma.booking.create({
+          data: {
+            roomId: data.roomId,
+            userId: data.userId,
+            startTime: start,
+            endTime: end,
+          },
+          include: { room: true, user: true },
+        });
+      } catch (error) {
+        if (
+          error.code === 'P2002' &&
+          error.meta?.target?.includes('userId_roomId_startTime_endTime')
+        ) {
+          throw new ConflictException('Exact same booking already exists');
+        }
+        throw error;
+      }
+    })
   }
 
   async findAll() {
     return this.prisma.booking.findMany({
       include: { room: true, user: true },
+      where: { isDeleted: false },
     });
   }
 
   async findById(id: number) {
     const booking = await this.prisma.booking.findUnique({
-      where: { id },
+      where: { id, isDeleted: false },
       include: { room: true, user: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
@@ -63,7 +90,7 @@ export class BookingsService {
       where: { id: bookingId },
     });
 
-    if (!booking) {
+    if (!booking || booking.isDeleted) {
       throw new NotFoundException('Booking not found');
     }
 
@@ -73,10 +100,9 @@ export class BookingsService {
       throw new ForbiddenException('You can only delete your own bookings');
     }
 
-    return this.prisma.booking.delete({
+    return this.prisma.booking.update({
       where: { id: bookingId },
+      data: { isDeleted: true },
     });
   }
-
-
 }

@@ -33,6 +33,7 @@ export class RoomsService {
 
     const bookings = await this.prisma.booking.findMany({
       where: {
+        isDeleted: false,
         OR: [
           {
             startTime: { lt: endTime },
